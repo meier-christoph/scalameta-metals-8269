@@ -4,13 +4,22 @@ https://github.com/scalameta/metals/issues/8269
 
 ## Problem
 
-Go-to-definition on external library symbols returns empty when the request is
-sent before Metals finishes build import and indexing. Local symbols survive via
-a guess-based fallback; external symbols (in dependency jars) do not.
+Go-to-definition on external library symbols returns empty when using Claude
+Code's LSP client on Windows. Hover on the same symbols works. Local symbols
+work for both.
 
-This race condition is triggered by LSP clients (e.g. Claude Code) that fire
-`textDocument/definition` immediately after `initialized` + `textDocument/didOpen`,
-without waiting for indexing to complete.
+### Root cause
+
+The bug is in Claude Code's LSP client layer, not in Metals itself:
+
+- Metals correctly resolves external definitions (confirmed by `scripts/fixed.mjs`
+  which talks to Metals directly over stdio and gets correct results).
+- Claude Code's LSP client loses the definition result somewhere between Metals
+  and the tool output. The metals log shows **no errors and no trace** of the
+  failed requests — the definition never reaches the caller.
+- Hover works through the same client, so the communication path is functional.
+  The issue is specific to how go-to-definition responses for external symbols
+  (jar-based paths) are handled.
 
 ## Environment
 
@@ -23,33 +32,34 @@ without waiting for indexing to complete.
 
 ```shell
 # Build metals.jar (once)
-coursier bootstrap org.scalameta:metals_2.13:1.6.6 --output metals.jar --standalone --preamble=false --bat=false -f
+coursier bootstrap org.scalameta:metals_2.13:1.6.6 \
+  --output metals.jar --standalone --preamble=false --bat=false -f
 
 # Generate bloop project files (once)
 sbt bloopInstall
 ```
 
-## Reproduce
+## Scripts
 
 Each script cleans `.metals/` on start for a fresh state.
 
 ```shell
-# Local symbol — succeeds (Metals uses guess-based fallback)
+# GOOD: local symbol, no wait — succeeds via guess-based fallback
 node scripts/good.mjs
 
-# External symbol — FAILS (empty result, no build target mapped yet)
+# BAD: external symbol, no wait — fails (empty result)
 node scripts/bad.mjs
 
-# External symbol — succeeds (waits for indexing before sending request)
+# FIXED: external symbol, waits for indexing — succeeds
 node scripts/fixed.mjs
 ```
 
-## Expected
+| Script     | Symbol        | Waits for indexing | Result  |
+|------------|---------------|--------------------|---------|
+| good.mjs   | HelloConfig   | no                 | SUCCESS |
+| bad.mjs    | ConfEncoder   | no                 | EMPTY   |
+| fixed.mjs  | ConfEncoder   | yes                | SUCCESS |
 
-All three scripts should return a definition location.
-
-## Actual
-
-`bad.mjs` returns `[]` — Metals logs `no build target found for ...` because
-the build import has not completed when the request arrives. `fixed.mjs` proves
-the same request succeeds when the client waits for indexing.
+Note: `bad.mjs` demonstrates a secondary timing issue (sending requests before
+indexing), but the primary bug persists even after indexing when accessed through
+Claude Code's LSP client — hover works, go-to-definition does not.
