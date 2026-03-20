@@ -1,0 +1,14 @@
+# sbt
+dist/*
+target/
+
+# Bloop
+.bsp
+
+# Metals
+.bloop/
+.metals/
+metals.sbt
+
+# IDEA
+.idea
